@@ -3,6 +3,7 @@
 import random
 import sys
 import getopt
+import logging
 from PIL import Image, ImageDraw, ImageFont
 from math import sqrt
 
@@ -38,13 +39,13 @@ def reversed_sections(tour):
             if copy != tour: # no point returning the same tour
                 yield copy
 
-def swapped_cities(tour):
-    '''generator to create all possible variations where two cities have been swapped'''
-    for i,j in all_pairs(len(tour)):
-        if i < j:
-            copy=tour[:]
-            copy[i],copy[j]=tour[j],tour[i]
-            yield copy
+#def swapped_cities(tour):
+#    '''generator to create all possible variations where two cities have been swapped'''
+#    for i,j in all_pairs(len(tour)):
+#        if i < j:
+#            copy=tour[:]
+#            copy[i],copy[j]=tour[j],tour[i]
+#            yield copy
 
 def cartesian_matrix(coords):
     '''create a distance matrix for the city coords that uses straight line distance'''
@@ -67,7 +68,7 @@ def read_coords(coord_file):
         coords.append((float(x),float(y)))
     return coords
 
-def tour_length(matrix,tour):
+def calculate_tour_length(matrix,tour):
     '''total up the total length of the tour based on the distance matrix'''
     total=0
     num_cities=len(tour)
@@ -76,7 +77,7 @@ def tour_length(matrix,tour):
         city_i=tour[i]
         city_j=tour[j]
         total+=matrix[city_i,city_j]
-    return total
+    return -total
 
 def write_tour_to_img(coords,tour,title,img_file):
     padding=20
@@ -112,41 +113,93 @@ def write_tour_to_img(coords,tour,title,img_file):
     del d
     img.save(img_file, "PNG")
 
-def init_random_tour(tour_length):
-   tour=range(tour_length)
+def init_random_tour(num_cities):
+   tour=range(num_cities)
    random.shuffle(tour)
    return tour
 
-def run_hillclimb(init_function,move_operator,objective_function,max_iterations):
-    from hillclimb import hillclimb_and_restart
-    iterations,score,best=hillclimb_and_restart(init_function,move_operator,objective_function,max_iterations)
-    return iterations,score,best
 
-def run_anneal(init_function,move_operator,objective_function,max_iterations,start_temp,alpha):
-    if start_temp is None or alpha is None:
-        usage();
-        print "missing --cooling start_temp:alpha for annealing"
-        sys.exit(1)
-    from sa import anneal
-    iterations,score,best=anneal(init_function,move_operator,objective_function,max_iterations,start_temp,alpha)
-    return iterations,score,best
+def hillclimb(coords,max_evaluations):
+    '''
+    hillclimb until either max_evaluations is reached or we are at a local optima
+    '''
+    random_tour=init_random_tour(len(coords))
+    matrix=cartesian_matrix(coords)
+    best=init_random_tour(len(coords))
+    best_score=calculate_tour_length(matrix,best)
+    
+    num_evaluations=1
+    
+    logging.info('hillclimb started: score=%f',best_score)
+    
+    while num_evaluations < max_evaluations:
+        # examine moves around our current position
+        move_made=False
+        for next in reversed_sections(best):
+            if num_evaluations >= max_evaluations:
+                break
+            
+            # see if this move is better than the current
+            next_score=calculate_tour_length(matrix,next)
+            num_evaluations+=1
+            if next_score > best_score:
+                best=next
+                best_score=next_score
+                move_made=True
+                break # depth first search
+            
+        if not move_made:
+            break # we couldn't find a better move (must be at a local maximum)
+    
+    logging.info('hillclimb finished: num_evaluations=%d, best_score=%f',num_evaluations,best_score)
+    return (num_evaluations,best_score,best)
+
+def hillclimb_and_restart(coords,max_evaluations):
+    '''
+    repeatedly hillclimb until max_evaluations is reached
+    '''
+    best=None
+    best_score=0
+    
+    num_evaluations=0
+    while num_evaluations < max_evaluations:
+        remaining_evaluations=max_evaluations-num_evaluations
+        
+        logging.info('(re)starting hillclimb %d/%d remaining',remaining_evaluations,max_evaluations)
+        evaluated,score,found=hillclimb(coords,remaining_evaluations)
+        
+        num_evaluations+=evaluated
+        if score > best_score or best is None:
+            best_score=score
+            best=found
+        
+    return (num_evaluations,best_score,best)
+
+
+
+
+#def run_hillclimb(coords,max_iterations):
+#    from hillclimb import hillclimb_and_restart
+#    iterations,score,best=hillclimb_and_restart(coords,max_iterations)
+#    return iterations,score,best
+
 
 def usage():
     print "usage: python %s [-o <output image file>] [-v] [-m reversed_sections|swapped_cities] -n <max iterations> [-a hillclimb|anneal] [--cooling start_temp:alpha] <city file>" % sys.argv[0]
 
 def main():
     try:
-        options, args = getopt.getopt(sys.argv[1:], "ho:vm:n:a:", ["cooling="])
+        options, args = getopt.getopt(sys.argv[1:], "ho:vn:w:")
     except getopt.GetoptError:
         usage()
         sys.exit(2)
     out_file_name=None
     max_iterations=None
     verbose=None
-    move_operator=reversed_sections
-    run_algorithm=run_hillclimb
+    #move_operator=reversed_sections
+    workers=1
+    #run_algorithm=run_hillclimb
     
-    start_temp,alpha=None,None
     
     for option,arg in options:
         if option == '-v':
@@ -158,22 +211,8 @@ def main():
             out_file_name=arg
         elif option == '-n':
             max_iterations=int(arg)
-        elif option == '-m':
-            if arg == 'swapped_cities':
-                move_operator=swapped_cities
-            elif arg == 'reversed_sections':
-                move_operator=reversed_sections
-        elif option == '-a':
-            if arg == 'hillclimb':
-                run_algorithm=run_hillclimb
-            elif arg == 'anneal':
-                # do this to pass start_temp and alpha to run_anneal
-                def run_anneal_with_temp(init_function,move_operator,objective_function,max_iterations):
-                    return run_anneal(init_function,move_operator,objective_function,max_iterations,start_temp,alpha)
-                run_algorithm=run_anneal_with_temp
-        elif option == '--cooling':
-            start_temp,alpha=arg.split(':')
-            start_temp,alpha=float(start_temp),float(alpha)
+        elif option == '-w':
+            workers=int(arg)
     
     if max_iterations is None:
         usage();
@@ -202,15 +241,15 @@ def main():
     
     # setup the things tsp specific parts hillclimb needs
     coords=read_coords(file(city_file))
-    init_function=lambda: init_random_tour(len(coords))
-    matrix=cartesian_matrix(coords)
-    objective_function=lambda tour: -tour_length(matrix,tour)
+    #random_tour=init_random_tour(len(coords))
+    #matrix=cartesian_matrix(coords)
+    #tour_length=lambda tour: calculate_tour_length(matrix,tour)
     
-    logging.info('using move_operator: %s'%move_operator)
+    #logging.info('using move_operator: %s'%move_operator)
     
-    iterations,score,best=run_algorithm(init_function,move_operator,objective_function,max_iterations)
+    iterations,score,best=hillclimb_and_restart(coords,max_iterations)
     # output results
-    print iterations,score,best
+    print iterations,-score,best
     
     if out_file_name:
         write_tour_to_img(coords,best,'%s: %f'%(city_file,score),file(out_file_name,'w'))
