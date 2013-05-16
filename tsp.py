@@ -253,6 +253,9 @@ def main():
     
     if out_file_name:
         write_tour_to_img(coords,best,'%s: %f'%(city_file,score),file(out_file_name,'w'))
+        
+        
+    print "probando"
 
 if __name__ == "__main__":
     main()
